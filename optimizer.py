@@ -460,6 +460,42 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
             # fallback sicuro: il path standard restera' disponibile a runtime
             continue
 
+    if getattr(simulator, "NUMBA_AVAILABLE", False) and bool(getattr(sim, "core_use_numba", False)):
+        try:
+            n = 128
+            lb = 16
+            max_index = 96
+            vol = np.ones(n, dtype=np.float64) * 10.0
+            cvol = np.cumsum(vol)
+            close = np.linspace(100.0, 120.0, n, dtype=np.float64)
+            cclose = np.cumsum(close)
+            open_ = close - 0.1
+            high = close + 0.2
+            low = close - 0.2
+
+            cand_idx, _, _, _, _, _, _ = simulator._build_candidates_numba(
+                vol,
+                cvol,
+                close,
+                cclose,
+                open_,
+                high,
+                low,
+                lb,
+                max_index,
+                1.0,
+                0,
+            )
+
+            if cand_idx.size == 0:
+                cand_idx = np.array([lb + 1], dtype=np.int64)
+            else:
+                cand_idx = cand_idx[: min(4, cand_idx.size)].astype(np.int64, copy=False)
+
+            simulator._compute_candidate_future_extrema_numba(high, low, cand_idx, 8)
+        except Exception:
+            pass
+
     _worker_simulator = sim
 
 
