@@ -431,6 +431,14 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
     cfg["core_subprofile"] = bool(profile_enabled)
     cfg["core_include_dt_strings"] = False
 
+    optimizer_core_use_numba_env = os.environ.get("OPTIMIZER_CORE_USE_NUMBA")
+    if optimizer_core_use_numba_env is not None:
+        optimizer_core_use_numba_env = optimizer_core_use_numba_env.strip()
+        if optimizer_core_use_numba_env == "0":
+            cfg["core_use_numba"] = False
+        elif optimizer_core_use_numba_env == "1":
+            cfg["core_use_numba"] = True
+
     sim = simulator.TradingSimulator(cfg)
 
     symbols = sim.get_available_symbols()
