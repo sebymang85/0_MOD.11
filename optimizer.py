@@ -1291,6 +1291,7 @@ def main():
 
     soft_value_lists_by_name = {name: vals for name, vals in zip(soft_param_names, soft_value_lists)}
     soft_volume_threshold_values = list(soft_value_lists_by_name.get("VOLUME_THRESHOLD", []))
+    profile_enabled = os.environ.get("OPTIMIZER_PROFILE", "0").strip() == "1"
 
     # Precompute SOFT combos e rimuovi UTC_HOUR_MIN==UTC_HOUR_MAX (sanity)
     t_combo_build = time.perf_counter()
@@ -1334,7 +1335,6 @@ def main():
     chunk_env = os.environ.get("OPTIMIZER_CHUNK_SIZE", "auto").strip()
     chunk_size = _auto_chunk_size(num_hard_groups, num_workers, chunk_env)
 
-    profile_enabled = os.environ.get("OPTIMIZER_PROFILE", "0").strip() == "1"
     spikes_batch_size = os.environ.get("OPTIMIZER_SPIKES_BATCH_SIZE", "1000").strip()
 
     print("========================================")
