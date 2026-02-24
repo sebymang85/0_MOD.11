@@ -2766,6 +2766,7 @@ class TradingSimulator:
         out = {
             "symbol": _cat_or_empty(acc_symbol, object),
             "ts": _cat_or_empty(acc_ts, np.int64),
+            "timestamp": _cat_or_empty(acc_ts, np.int64),
             "dt_str": _cat_or_empty(acc_dt_str, object),
             "curr_vol": _cat_or_empty(acc_curr_vol, np.float64),
             "vol_ratio": _cat_or_empty(acc_vol_ratio, np.float64),
