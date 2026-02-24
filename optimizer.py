@@ -351,17 +351,13 @@ def _write_spikes_batch(arr: dict, pending_writes: list, dt_cache: dict) -> None
 
     for spikes_file, idx_sel in pending_writes:
         with open(spikes_file, "w", encoding="utf-8", newline="", buffering=1024 * 1024) as f:
-            writer = csv.writer(
-                f,
-                delimiter=";",
-                quoting=csv.QUOTE_MINIMAL,
-                lineterminator="\n",
-            )
-            writer.writerow(_SPIKES_MIN_COLUMNS)
+            f.write("symbol;timestamp;datetime\n")
 
             if idx_sel.size == 0:
                 continue
 
+            lines = []
+            lines_chunk_limit = 4096
             for i in idx_sel:
                 i_int = int(i)
                 ts_i = int(ts_arr[i_int])
@@ -375,7 +371,13 @@ def _write_spikes_batch(arr: dict, pending_writes: list, dt_cache: dict) -> None
                 if not dt_s:
                     dt_s = _dt_string_from_ts_cached(ts_i, dt_cache)
 
-                writer.writerow([symbol_arr[i_int], str(ts_i), dt_s])
+                lines.append(f"{symbol_arr[i_int]};{ts_i};{dt_s}\n")
+                if len(lines) >= lines_chunk_limit:
+                    f.write("".join(lines))
+                    lines.clear()
+
+            if lines:
+                f.write("".join(lines))
 
     pending_writes.clear()
 
