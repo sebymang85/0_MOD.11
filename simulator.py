@@ -67,7 +67,7 @@ logger = setup_detailed_logging('INFO', log_to_file=False)
 
 if NUMBA_AVAILABLE:
     @njit(cache=True)
-    def _build_candidates_numba(vol, cvol, close, cclose, open_, high, low, lb, max_index, volume_threshold, cooldown_step):
+    def _build_candidates_numba(vol, cvol, close, cclose, open_, high, low, lb, max_index, volume_threshold, cooldown_step, core_minimal_mode):
         n_max = max_index - lb
         if n_max <= 0:
             return (
@@ -83,10 +83,16 @@ if NUMBA_AVAILABLE:
         cand_idx = np.empty(n_max, dtype=np.int64)
         cand_vr = np.empty(n_max, dtype=np.float64)
         cand_cv = np.empty(n_max, dtype=np.float64)
-        cand_ap = np.empty(n_max, dtype=np.float64)
-        cand_pr = np.empty(n_max, dtype=np.float64)
-        hl_pct = np.empty(n_max, dtype=np.float64)
-        body_ratio = np.empty(n_max, dtype=np.float64)
+        if core_minimal_mode:
+            cand_ap = np.empty(0, dtype=np.float64)
+            cand_pr = np.empty(0, dtype=np.float64)
+            hl_pct = np.empty(0, dtype=np.float64)
+            body_ratio = np.empty(0, dtype=np.float64)
+        else:
+            cand_ap = np.empty(n_max, dtype=np.float64)
+            cand_pr = np.empty(n_max, dtype=np.float64)
+            hl_pct = np.empty(n_max, dtype=np.float64)
+            body_ratio = np.empty(n_max, dtype=np.float64)
 
         out_n = 0
         next_allowed = lb
@@ -109,30 +115,31 @@ if NUMBA_AVAILABLE:
             if cp <= 0.0 or ap <= 0.0:
                 continue
 
-            pr = ((cp - ap) / ap) * 100.0
-            hi = high[i]
-            lo = low[i]
-            op = open_[i]
-            hl = hi - lo
-
-            hlv = 0.0
-            if cp > 0.0:
-                hlv = (hl / cp) * 100.0
-
-            br = 0.0
-            if hl > 0.0:
-                diff = cp - op
-                if diff < 0.0:
-                    diff = -diff
-                br = diff / hl
-
             cand_idx[out_n] = i
             cand_vr[out_n] = vr
             cand_cv[out_n] = curr_vol
-            cand_ap[out_n] = ap
-            cand_pr[out_n] = pr
-            hl_pct[out_n] = hlv
-            body_ratio[out_n] = br
+            if not core_minimal_mode:
+                pr = ((cp - ap) / ap) * 100.0
+                hi = high[i]
+                lo = low[i]
+                op = open_[i]
+                hl = hi - lo
+
+                hlv = 0.0
+                if cp > 0.0:
+                    hlv = (hl / cp) * 100.0
+
+                br = 0.0
+                if hl > 0.0:
+                    diff = cp - op
+                    if diff < 0.0:
+                        diff = -diff
+                    br = diff / hl
+
+                cand_ap[out_n] = ap
+                cand_pr[out_n] = pr
+                hl_pct[out_n] = hlv
+                body_ratio[out_n] = br
             out_n += 1
 
             if cooldown_step > 0:
@@ -360,6 +367,7 @@ class TradingSimulator:
         if self.core_extrema_mode not in ('candidate', 'precompute'):
             self.core_extrema_mode = 'candidate'
         self.core_use_numba = bool(config.get('core_use_numba', NUMBA_AVAILABLE))
+        self.core_minimal_mode = bool(config.get('core_minimal_mode', False))
 
         # Statistics tracking
         self.symbols_processed = 0
@@ -1670,6 +1678,7 @@ class TradingSimulator:
             t_build = time.perf_counter()
             cooldown_step = int(self.spike_cooldown_candles) if self.spike_cooldown_candles > 0 else 0
             if self.core_use_numba and NUMBA_AVAILABLE:
+                core_minimal_mode = bool(self.core_minimal_mode)
                 cand_idx, cand_vr, cand_cv, cand_ap, cand_pr, hl_pct, body_ratio = _build_candidates_numba(
                     vol,
                     cvol,
@@ -1682,6 +1691,7 @@ class TradingSimulator:
                     int(max_index),
                     float(self.volume_threshold),
                     int(cooldown_step),
+                    core_minimal_mode,
                 )
                 cand_av = None
                 if use_post_filters:
@@ -1690,6 +1700,22 @@ class TradingSimulator:
                     else:
                         cand_av = np.empty(0, dtype=np.float64)
                 cand_cp = close[cand_idx]
+                if core_minimal_mode:
+                    cand_ap = (cclose[cand_idx] - cclose[cand_idx - lb]) / float(lb)
+                    cand_pr = ((cand_cp - cand_ap) / cand_ap) * 100.0
+
+                    cand_high = high[cand_idx]
+                    cand_low = low[cand_idx]
+                    cand_open = open_[cand_idx]
+
+                    hl_range = (cand_high - cand_low)
+                    hl_pct = np.zeros_like(cand_cp, dtype=float)
+                    np.divide(hl_range, cand_cp, out=hl_pct, where=cand_cp > 0)
+                    hl_pct = hl_pct * 100.0
+
+                    body = np.abs(cand_cp - cand_open)
+                    body_ratio = np.zeros_like(cand_cp, dtype=float)
+                    np.divide(body, hl_range, out=body_ratio, where=hl_range > 0)
             else:
                 idx_all = np.arange(lb, max_index, dtype=np.int64)
                 curr_vol_all = vol[idx_all]
