@@ -483,7 +483,7 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
             high = close + 0.2
             low = close - 0.2
 
-            cand_idx, _, _, _, _, _, _, out_n = simulator._build_candidates_numba(
+            cand_idx, _, _, _, _, _, _ = simulator._build_candidates_numba(
                 vol,
                 cvol,
                 close,
@@ -496,7 +496,6 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
                 1.0,
                 0,
             )
-            cand_idx = cand_idx[:out_n]
 
             if cand_idx.size == 0:
                 cand_idx = np.array([lb + 1], dtype=np.int64)
