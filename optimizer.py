@@ -808,6 +808,31 @@ def _price_ratio_mask(price_ratio_arr, mode: str, min_v, max_v):
     return keep
 
 
+def apply_cooldown_indices(idx_sorted: np.ndarray, cooldown: int) -> np.ndarray:
+    """
+    idx_sorted deve essere crescente.
+    Selezione greedy: prende il primo, poi il prossimo con idx >= last + cooldown.
+    Ritorna posizioni selezionate dentro idx_sorted.
+    """
+    if idx_sorted.size == 0:
+        return np.array([], dtype=np.int64)
+    try:
+        cd = int(cooldown)
+    except Exception:
+        cd = 0
+    if cd <= 0:
+        return np.arange(idx_sorted.size, dtype=np.int64)
+
+    keep_pos = []
+    j_keep = 0
+    while j_keep < idx_sorted.size:
+        keep_pos.append(j_keep)
+        next_allowed = int(idx_sorted[j_keep]) + cd
+        j_keep = int(np.searchsorted(idx_sorted, next_allowed, side='left'))
+
+    return np.asarray(keep_pos, dtype=np.int64)
+
+
 def _compute_metrics_for_optimizer(arr, idx_arr):
     """
     Calcolo metriche FAST su idx selezionati.
@@ -1175,11 +1200,8 @@ def _run_simulation_chunk(chunk):
                         pos = np.flatnonzero(sel_symbol == sym)
                         if pos.size == 0:
                             continue
-                        j_keep = 0
-                        while j_keep < pos.size:
-                            keep[pos[j_keep]] = True
-                            next_allowed = int(sel_cand_idx[pos[j_keep]]) + cooldown_candles
-                            j_keep = int(np.searchsorted(sel_cand_idx[pos], next_allowed, side='left'))
+                        keep_pos = apply_cooldown_indices(sel_cand_idx[pos], cooldown_candles)
+                        keep[pos[keep_pos]] = True
                     idx_sel = idx_sel[keep]
 
             # ==== Scrivi file eventi (nome stabile) ====
