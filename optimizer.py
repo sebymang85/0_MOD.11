@@ -85,6 +85,7 @@ ENV_TO_CONFIG_KEY = {
 # => UTC_HOUR_* DEVE stare qui per avere il boost vero.
 # =============================================================================
 SOFT_PARAMS = {
+    "VOLUME_THRESHOLD",
     "VOLUME_THRESHOLD_MAX",
     "MIN_CURRENT_VOLUME",
     "MAX_CURRENT_VOLUME",
@@ -602,6 +603,7 @@ def _build_core_arrays(core_spikes):
                 "ts": np.array([], dtype=np.int64),
                 "dt_str": np.array([], dtype=object),
                 "curr_vol": np.array([], dtype=np.float64),
+                "cand_idx": np.array([], dtype=np.int64),
                 "vol_ratio": np.array([], dtype=np.float64),
                 "price_ratio": np.array([], dtype=np.float64),
                 "hl_pct": np.array([], dtype=np.float64),
@@ -620,6 +622,7 @@ def _build_core_arrays(core_spikes):
         dt_str = np.asarray(core_spikes.get("dt_str", core_spikes.get("datetime", [""] * n)), dtype=object)
 
         curr_vol = np.asarray(core_spikes.get("curr_vol", core_spikes.get("current_volume", np.zeros(n))), dtype=np.float64)
+        cand_idx = np.asarray(core_spikes.get("cand_idx", np.zeros(n)), dtype=np.int64)
         vol_ratio = np.asarray(core_spikes.get("vol_ratio", core_spikes.get("volume_ratio", np.zeros(n))), dtype=np.float64)
         price_ratio = np.asarray(core_spikes.get("price_ratio", np.zeros(n)), dtype=np.float64)
         hl_pct = np.asarray(core_spikes.get("hl_pct", np.zeros(n)), dtype=np.float64)
@@ -649,6 +652,7 @@ def _build_core_arrays(core_spikes):
             "ts": ts,
             "dt_str": dt_str,
             "curr_vol": curr_vol,
+            "cand_idx": cand_idx,
             "vol_ratio": vol_ratio,
             "price_ratio": price_ratio,
             "hl_pct": hl_pct,
@@ -672,6 +676,7 @@ def _build_core_arrays(core_spikes):
             "ts": np.array([], dtype=np.int64),
             "dt_str": np.array([], dtype=object),
             "curr_vol": np.array([], dtype=np.float64),
+            "cand_idx": np.array([], dtype=np.int64),
             "vol_ratio": np.array([], dtype=np.float64),
             "price_ratio": np.array([], dtype=np.float64),
             "hl_pct": np.array([], dtype=np.float64),
@@ -691,6 +696,7 @@ def _build_core_arrays(core_spikes):
     dt_str = np.empty(n, dtype=object)
 
     curr_vol = np.empty(n, dtype=np.float64)
+    cand_idx = np.zeros(n, dtype=np.int64)
     vol_ratio = np.empty(n, dtype=np.float64)
     price_ratio = np.empty(n, dtype=np.float64)
     hl_pct = np.empty(n, dtype=np.float64)
@@ -717,6 +723,7 @@ def _build_core_arrays(core_spikes):
         dt_str[i] = "" if d is None else str(d)
 
         curr_vol[i] = float(s.get("current_volume", 0.0))
+        cand_idx[i] = int(s.get("cand_idx", i))
         vol_ratio[i] = float(s.get("volume_ratio", 0.0))
         price_ratio[i] = float(s.get("price_ratio", 0.0))
         hl_pct[i] = float(s.get("hl_pct", 0.0))
@@ -744,6 +751,7 @@ def _build_core_arrays(core_spikes):
         "ts": ts,
         "dt_str": dt_str,
         "curr_vol": curr_vol,
+        "cand_idx": cand_idx,
         "vol_ratio": vol_ratio,
         "price_ratio": price_ratio,
         "hl_pct": hl_pct,
@@ -945,6 +953,7 @@ def _run_simulation_chunk(chunk):
     sim = _worker_simulator
     spikes_batch = []
     dt_cache = {}
+    idx_soft_volume_threshold = _SOFT_PARAM_NAMES.index("VOLUME_THRESHOLD") if "VOLUME_THRESHOLD" in _SOFT_PARAM_NAMES else -1
 
     def _kfloat(x):
         if x is None:
@@ -967,11 +976,35 @@ def _run_simulation_chunk(chunk):
                 sim.config[config_key] = value
                 setattr(sim, config_key, value)
 
+        min_soft_volume_threshold = None
+        if idx_soft_volume_threshold >= 0 and _SOFT_COMBOS:
+            vals = []
+            for sc in _SOFT_COMBOS:
+                try:
+                    vals.append(float(sc[idx_soft_volume_threshold]))
+                except Exception:
+                    continue
+            if vals:
+                min_soft_volume_threshold = min(vals)
+        if min_soft_volume_threshold is None:
+            min_soft_volume_threshold = float(getattr(sim, "volume_threshold", sim.config.get("volume_threshold", 0.0)))
+
+        saved_volume_threshold = float(getattr(sim, "volume_threshold", sim.config.get("volume_threshold", 0.0)))
+        saved_spike_cooldown_candles = int(getattr(sim, "spike_cooldown_candles", sim.config.get("spike_cooldown_candles", 0)))
+        sim.volume_threshold = float(min_soft_volume_threshold)
+        sim.config["volume_threshold"] = float(min_soft_volume_threshold)
+        sim.spike_cooldown_candles = 0
+        sim.config["spike_cooldown_candles"] = 0
+
         # Core scan riusabile: disattiva filtri post prima della scansione
         t_core = time.perf_counter()
         saved_filters = _neutralize_post_filters_for_core_scan(sim)
         core_spikes = sim.run_simulation_core_spikes()
         _restore_post_filters_after_core_scan(sim, saved_filters)
+        sim.volume_threshold = saved_volume_threshold
+        sim.config["volume_threshold"] = saved_volume_threshold
+        sim.spike_cooldown_candles = saved_spike_cooldown_candles
+        sim.config["spike_cooldown_candles"] = saved_spike_cooldown_candles
         stats["core_scan_s"] += (time.perf_counter() - t_core)
         if _PROFILE_ENABLED and isinstance(core_spikes, dict):
             cprof = core_spikes.get("__core_profile", {})
@@ -1049,6 +1082,11 @@ def _run_simulation_chunk(chunk):
                     k = ("vtm", _kfloat(vtm))
                     mask &= _get_mask(k, lambda: (arr["vol_ratio"] <= float(vtm)))
 
+                vt = full_param_values.get("VOLUME_THRESHOLD")
+                if vt is not None:
+                    k = ("vt", _kfloat(vt))
+                    mask &= _get_mask(k, lambda: (arr["vol_ratio"] >= float(vt)))
+
                 # UTC hour range
                 hmin = full_param_values.get("UTC_HOUR_MIN")
                 hmax = full_param_values.get("UTC_HOUR_MAX")
@@ -1106,6 +1144,27 @@ def _run_simulation_chunk(chunk):
                     mask &= _get_mask(k, lambda: (arr["body_ratio"] >= float(br_min)))
 
                 idx_sel = np.flatnonzero(mask)
+
+                cooldown_candles = full_param_values.get("SPIKE_COOLDOWN_CANDLES", 0)
+                try:
+                    cooldown_candles = int(cooldown_candles)
+                except Exception:
+                    cooldown_candles = 0
+                if cooldown_candles > 0 and idx_sel.size > 1:
+                    sel_symbol = arr["symbol"][idx_sel]
+                    sel_cand_idx = arr["cand_idx"][idx_sel]
+                    keep = np.zeros(idx_sel.size, dtype=bool)
+                    uniq = np.unique(sel_symbol)
+                    for sym in uniq:
+                        pos = np.flatnonzero(sel_symbol == sym)
+                        if pos.size == 0:
+                            continue
+                        j_keep = 0
+                        while j_keep < pos.size:
+                            keep[pos[j_keep]] = True
+                            next_allowed = int(sel_cand_idx[pos[j_keep]]) + cooldown_candles
+                            j_keep = int(np.searchsorted(sel_cand_idx[pos], next_allowed, side='left'))
+                    idx_sel = idx_sel[keep]
 
             # ==== Scrivi file eventi (nome stabile) ====
             spikes_file = f"simulation_results/spikes_excel_opt_{combination_index}.csv"

@@ -1944,6 +1944,7 @@ class TradingSimulator:
 
             if keep_mask is not None:
                 out_ts_arr = ts[cand_idx][keep_mask].astype(np.int64, copy=False)
+                out_cand_idx = cand_idx[keep_mask].astype(np.int64, copy=False)
                 out_curr_vol = cand_cv[keep_mask].astype(np.float64, copy=False)
                 out_vol_ratio = cand_vr[keep_mask].astype(np.float64, copy=False)
                 out_price_ratio = cand_pr[keep_mask].astype(np.float64, copy=False)
@@ -1957,6 +1958,7 @@ class TradingSimulator:
                 out_lead_time_down = lead_time_down_eff[keep_mask].astype(np.int32, copy=False)
             else:
                 out_ts_arr = ts[cand_idx].astype(np.int64, copy=False)
+                out_cand_idx = cand_idx.astype(np.int64, copy=False)
                 out_curr_vol = cand_cv.astype(np.float64, copy=False)
                 out_vol_ratio = cand_vr.astype(np.float64, copy=False)
                 out_price_ratio = cand_pr.astype(np.float64, copy=False)
@@ -1977,6 +1979,7 @@ class TradingSimulator:
             out_payload = {
                 "symbol": np.full(out_ts_arr.size, symbol, dtype=object),
                 "ts": out_ts_arr,
+                "cand_idx": out_cand_idx,
                 "dt_str": out_dt_arr,
                 "curr_vol": out_curr_vol,
                 "vol_ratio": out_vol_ratio,
@@ -2685,6 +2688,7 @@ class TradingSimulator:
         acc_ts = []
         acc_dt_str = []
         acc_curr_vol = []
+        acc_cand_idx = []
         acc_vol_ratio = []
         acc_price_ratio = []
         acc_hl_pct = []
@@ -2725,6 +2729,7 @@ class TradingSimulator:
                     acc_ts.append(d["ts"])
                     acc_dt_str.append(d["dt_str"])
                     acc_curr_vol.append(d["curr_vol"])
+                    acc_cand_idx.append(d.get("cand_idx", np.zeros(n_sym, dtype=np.int64)))
                     acc_vol_ratio.append(d["vol_ratio"])
                     acc_price_ratio.append(d["price_ratio"])
                     acc_hl_pct.append(d["hl_pct"])
@@ -2769,6 +2774,7 @@ class TradingSimulator:
             "timestamp": _cat_or_empty(acc_ts, np.int64),
             "dt_str": _cat_or_empty(acc_dt_str, object),
             "curr_vol": _cat_or_empty(acc_curr_vol, np.float64),
+            "cand_idx": _cat_or_empty(acc_cand_idx, np.int64),
             "vol_ratio": _cat_or_empty(acc_vol_ratio, np.float64),
             "price_ratio": _cat_or_empty(acc_price_ratio, np.float64),
             "hl_pct": _cat_or_empty(acc_hl_pct, np.float64),
