@@ -432,7 +432,6 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
     cfg["save_us_csv"] = False
     cfg["core_subprofile"] = bool(profile_enabled)
     cfg["core_include_dt_strings"] = False
-    cfg["core_minimal_mode"] = True
 
     optimizer_core_use_numba_env = os.environ.get("OPTIMIZER_CORE_USE_NUMBA")
     if optimizer_core_use_numba_env is not None:
@@ -496,7 +495,6 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
                 max_index,
                 1.0,
                 0,
-                True,
             )
 
             if cand_idx.size == 0:
