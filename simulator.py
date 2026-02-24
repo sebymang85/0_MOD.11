@@ -78,6 +78,7 @@ if NUMBA_AVAILABLE:
                 np.empty(0, dtype=np.float64),
                 np.empty(0, dtype=np.float64),
                 np.empty(0, dtype=np.float64),
+                0,
             )
 
         cand_idx = np.empty(n_max, dtype=np.int64)
@@ -139,13 +140,14 @@ if NUMBA_AVAILABLE:
                 next_allowed = i + cooldown_step
 
         return (
-            cand_idx[:out_n],
-            cand_vr[:out_n],
-            cand_cv[:out_n],
-            cand_ap[:out_n],
-            cand_pr[:out_n],
-            hl_pct[:out_n],
-            body_ratio[:out_n],
+            cand_idx,
+            cand_vr,
+            cand_cv,
+            cand_ap,
+            cand_pr,
+            hl_pct,
+            body_ratio,
+            out_n,
         )
 
 
@@ -1670,7 +1672,7 @@ class TradingSimulator:
             t_build = time.perf_counter()
             cooldown_step = int(self.spike_cooldown_candles) if self.spike_cooldown_candles > 0 else 0
             if self.core_use_numba and NUMBA_AVAILABLE:
-                cand_idx, cand_vr, cand_cv, cand_ap, cand_pr, hl_pct, body_ratio = _build_candidates_numba(
+                cand_idx, cand_vr, cand_cv, cand_ap, cand_pr, hl_pct, body_ratio, out_n = _build_candidates_numba(
                     vol,
                     cvol,
                     close,
@@ -1683,6 +1685,13 @@ class TradingSimulator:
                     float(self.volume_threshold),
                     int(cooldown_step),
                 )
+                cand_idx = cand_idx[:out_n]
+                cand_vr = cand_vr[:out_n]
+                cand_cv = cand_cv[:out_n]
+                cand_ap = cand_ap[:out_n]
+                cand_pr = cand_pr[:out_n]
+                hl_pct = hl_pct[:out_n]
+                body_ratio = body_ratio[:out_n]
                 cand_av = None
                 if use_post_filters:
                     if cand_idx.size > 0:
