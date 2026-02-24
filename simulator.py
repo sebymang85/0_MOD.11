@@ -1919,12 +1919,12 @@ class TradingSimulator:
                     if ok_post:
                         keep_mask[j] = True
             else:
-                keep_mask = np.ones(cand_idx.size, dtype=bool)
+                keep_mask = None
 
             if core_subprofile:
                 prof["candidate_loop_s"] += (time.perf_counter() - t_loop)
 
-            if not np.any(keep_mask):
+            if keep_mask is not None and not np.any(keep_mask):
                 return {
                     "symbol": np.array([], dtype=object),
                     "ts": np.array([], dtype=np.int64),
@@ -1942,7 +1942,35 @@ class TradingSimulator:
                     "lead_time_down": np.array([], dtype=np.int32),
                 }
 
-            out_ts_arr = ts[cand_idx][keep_mask].astype(np.int64, copy=False)
+            if keep_mask is not None:
+                out_ts_arr = ts[cand_idx][keep_mask].astype(np.int64, copy=False)
+                out_cand_idx = cand_idx[keep_mask].astype(np.int64, copy=False)
+                out_curr_vol = cand_cv[keep_mask].astype(np.float64, copy=False)
+                out_vol_ratio = cand_vr[keep_mask].astype(np.float64, copy=False)
+                out_price_ratio = cand_pr[keep_mask].astype(np.float64, copy=False)
+                out_hl_pct = hl_pct[keep_mask].astype(np.float64, copy=False)
+                out_body_ratio = body_ratio[keep_mask].astype(np.float64, copy=False)
+                out_is_ok = is_ok_long_arr[keep_mask].astype(bool, copy=False)
+                out_is_ok_short = is_ok_short_arr[keep_mask].astype(bool, copy=False)
+                out_price_increase = price_increase_arr[keep_mask].astype(np.float64, copy=False)
+                out_lead_time = lead_time_eff[keep_mask].astype(np.int32, copy=False)
+                out_price_decrease = price_decrease_arr[keep_mask].astype(np.float64, copy=False)
+                out_lead_time_down = lead_time_down_eff[keep_mask].astype(np.int32, copy=False)
+            else:
+                out_ts_arr = ts[cand_idx].astype(np.int64, copy=False)
+                out_cand_idx = cand_idx.astype(np.int64, copy=False)
+                out_curr_vol = cand_cv.astype(np.float64, copy=False)
+                out_vol_ratio = cand_vr.astype(np.float64, copy=False)
+                out_price_ratio = cand_pr.astype(np.float64, copy=False)
+                out_hl_pct = hl_pct.astype(np.float64, copy=False)
+                out_body_ratio = body_ratio.astype(np.float64, copy=False)
+                out_is_ok = is_ok_long_arr.astype(bool, copy=False)
+                out_is_ok_short = is_ok_short_arr.astype(bool, copy=False)
+                out_price_increase = price_increase_arr.astype(np.float64, copy=False)
+                out_lead_time = lead_time_eff.astype(np.int32, copy=False)
+                out_price_decrease = price_decrease_arr.astype(np.float64, copy=False)
+                out_lead_time_down = lead_time_down_eff.astype(np.int32, copy=False)
+
             include_dt_strings = bool(self.config.get("core_include_dt_strings", True))
             if include_dt_strings:
                 out_dt_arr = self._dt_strings_from_ts(out_ts_arr, prof if core_subprofile else None)
@@ -1951,18 +1979,19 @@ class TradingSimulator:
             out_payload = {
                 "symbol": np.full(out_ts_arr.size, symbol, dtype=object),
                 "ts": out_ts_arr,
+                "cand_idx": out_cand_idx,
                 "dt_str": out_dt_arr,
-                "curr_vol": cand_cv[keep_mask].astype(np.float64, copy=False),
-                "vol_ratio": cand_vr[keep_mask].astype(np.float64, copy=False),
-                "price_ratio": cand_pr[keep_mask].astype(np.float64, copy=False),
-                "hl_pct": hl_pct[keep_mask].astype(np.float64, copy=False),
-                "body_ratio": body_ratio[keep_mask].astype(np.float64, copy=False),
-                "is_ok": is_ok_long_arr[keep_mask].astype(bool, copy=False),
-                "is_ok_short": is_ok_short_arr[keep_mask].astype(bool, copy=False),
-                "price_increase": price_increase_arr[keep_mask].astype(np.float64, copy=False),
-                "lead_time": lead_time_eff[keep_mask].astype(np.int32, copy=False),
-                "price_decrease": price_decrease_arr[keep_mask].astype(np.float64, copy=False),
-                "lead_time_down": lead_time_down_eff[keep_mask].astype(np.int32, copy=False),
+                "curr_vol": out_curr_vol,
+                "vol_ratio": out_vol_ratio,
+                "price_ratio": out_price_ratio,
+                "hl_pct": out_hl_pct,
+                "body_ratio": out_body_ratio,
+                "is_ok": out_is_ok,
+                "is_ok_short": out_is_ok_short,
+                "price_increase": out_price_increase,
+                "lead_time": out_lead_time,
+                "price_decrease": out_price_decrease,
+                "lead_time_down": out_lead_time_down,
             }
             if core_subprofile:
                 out_payload["__profile"] = dict(prof)
@@ -2659,6 +2688,7 @@ class TradingSimulator:
         acc_ts = []
         acc_dt_str = []
         acc_curr_vol = []
+        acc_cand_idx = []
         acc_vol_ratio = []
         acc_price_ratio = []
         acc_hl_pct = []
@@ -2699,6 +2729,7 @@ class TradingSimulator:
                     acc_ts.append(d["ts"])
                     acc_dt_str.append(d["dt_str"])
                     acc_curr_vol.append(d["curr_vol"])
+                    acc_cand_idx.append(d.get("cand_idx", np.zeros(n_sym, dtype=np.int64)))
                     acc_vol_ratio.append(d["vol_ratio"])
                     acc_price_ratio.append(d["price_ratio"])
                     acc_hl_pct.append(d["hl_pct"])
@@ -2740,8 +2771,10 @@ class TradingSimulator:
         out = {
             "symbol": _cat_or_empty(acc_symbol, object),
             "ts": _cat_or_empty(acc_ts, np.int64),
+            "timestamp": _cat_or_empty(acc_ts, np.int64),
             "dt_str": _cat_or_empty(acc_dt_str, object),
             "curr_vol": _cat_or_empty(acc_curr_vol, np.float64),
+            "cand_idx": _cat_or_empty(acc_cand_idx, np.int64),
             "vol_ratio": _cat_or_empty(acc_vol_ratio, np.float64),
             "price_ratio": _cat_or_empty(acc_price_ratio, np.float64),
             "hl_pct": _cat_or_empty(acc_hl_pct, np.float64),

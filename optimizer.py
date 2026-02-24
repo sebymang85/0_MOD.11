@@ -85,6 +85,7 @@ ENV_TO_CONFIG_KEY = {
 # => UTC_HOUR_* DEVE stare qui per avere il boost vero.
 # =============================================================================
 SOFT_PARAMS = {
+    "VOLUME_THRESHOLD",
     "VOLUME_THRESHOLD_MAX",
     "MIN_CURRENT_VOLUME",
     "MAX_CURRENT_VOLUME",
@@ -323,7 +324,8 @@ def _format_optimizer_row_for_csv(row: dict) -> dict:
 _worker_simulator = None
 
 _SOFT_PARAM_NAMES = []
-_SOFT_COMBOS = []
+_SOFT_VALUE_LISTS_BY_NAME = {}
+_SOFT_VOLUME_THRESHOLD_VALUES = []
 _SOFT_TOTAL = 1
 _PROFILE_ENABLED = False
 _SPIKES_BATCH_SIZE = 1000
@@ -351,17 +353,13 @@ def _write_spikes_batch(arr: dict, pending_writes: list, dt_cache: dict) -> None
 
     for spikes_file, idx_sel in pending_writes:
         with open(spikes_file, "w", encoding="utf-8", newline="", buffering=1024 * 1024) as f:
-            writer = csv.writer(
-                f,
-                delimiter=";",
-                quoting=csv.QUOTE_MINIMAL,
-                lineterminator="\n",
-            )
-            writer.writerow(_SPIKES_MIN_COLUMNS)
+            f.write("symbol;timestamp;datetime\n")
 
             if idx_sel.size == 0:
                 continue
 
+            lines = []
+            lines_chunk_limit = 4096
             for i in idx_sel:
                 i_int = int(i)
                 ts_i = int(ts_arr[i_int])
@@ -375,7 +373,13 @@ def _write_spikes_batch(arr: dict, pending_writes: list, dt_cache: dict) -> None
                 if not dt_s:
                     dt_s = _dt_string_from_ts_cached(ts_i, dt_cache)
 
-                writer.writerow([symbol_arr[i_int], str(ts_i), dt_s])
+                lines.append(f"{symbol_arr[i_int]};{ts_i};{dt_s}\n")
+                if len(lines) >= lines_chunk_limit:
+                    f.write("".join(lines))
+                    lines.clear()
+
+            if lines:
+                f.write("".join(lines))
 
     pending_writes.clear()
 
@@ -399,7 +403,7 @@ def _parse_weekday_to_set(value):
     return set(int(p) for p in parts)
 
 
-def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, soft_total: int, profile_enabled: bool):
+def _init_worker(base_config: dict, soft_param_names: list, soft_value_lists_by_name: dict, soft_total: int, profile_enabled: bool, soft_volume_threshold_values: list):
     """
     Init worker:
     - logging
@@ -407,11 +411,12 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
     - carica tutti i simboli in RAM
     - cache np_data per DF cached
     """
-    global _worker_simulator, _SOFT_PARAM_NAMES, _SOFT_COMBOS, _SOFT_TOTAL, _PROFILE_ENABLED
+    global _worker_simulator, _SOFT_PARAM_NAMES, _SOFT_VALUE_LISTS_BY_NAME, _SOFT_VOLUME_THRESHOLD_VALUES, _SOFT_TOTAL, _PROFILE_ENABLED
     global _SPIKES_BATCH_SIZE
 
     _SOFT_PARAM_NAMES = list(soft_param_names) if soft_param_names else []
-    _SOFT_COMBOS = list(soft_combos) if soft_combos else [()]
+    _SOFT_VALUE_LISTS_BY_NAME = dict(soft_value_lists_by_name) if soft_value_lists_by_name else {}
+    _SOFT_VOLUME_THRESHOLD_VALUES = list(soft_volume_threshold_values) if soft_volume_threshold_values else []
     _SOFT_TOTAL = int(soft_total) if soft_total and int(soft_total) > 0 else 1
     _PROFILE_ENABLED = bool(profile_enabled)
     try:
@@ -430,6 +435,20 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
     cfg["save_us_csv"] = False
     cfg["core_subprofile"] = bool(profile_enabled)
     cfg["core_include_dt_strings"] = False
+
+    optimizer_core_use_numba_env = os.environ.get("OPTIMIZER_CORE_USE_NUMBA")
+    if optimizer_core_use_numba_env is not None:
+        optimizer_core_use_numba_env = optimizer_core_use_numba_env.strip()
+        if optimizer_core_use_numba_env == "0":
+            cfg["core_use_numba"] = False
+        elif optimizer_core_use_numba_env == "1":
+            cfg["core_use_numba"] = True
+
+    optimizer_core_extrema_mode_env = os.environ.get("OPTIMIZER_CORE_EXTREMA_MODE")
+    if optimizer_core_extrema_mode_env is not None:
+        optimizer_core_extrema_mode_env = optimizer_core_extrema_mode_env.strip().lower()
+        if optimizer_core_extrema_mode_env in ("candidate", "precompute"):
+            cfg["core_extrema_mode"] = optimizer_core_extrema_mode_env
 
     sim = simulator.TradingSimulator(cfg)
 
@@ -459,6 +478,42 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
         except Exception:
             # fallback sicuro: il path standard restera' disponibile a runtime
             continue
+
+    if getattr(simulator, "NUMBA_AVAILABLE", False) and bool(getattr(sim, "core_use_numba", False)):
+        try:
+            n = 128
+            lb = 16
+            max_index = 96
+            vol = np.ones(n, dtype=np.float64) * 10.0
+            cvol = np.cumsum(vol)
+            close = np.linspace(100.0, 120.0, n, dtype=np.float64)
+            cclose = np.cumsum(close)
+            open_ = close - 0.1
+            high = close + 0.2
+            low = close - 0.2
+
+            cand_idx, _, _, _, _, _, _ = simulator._build_candidates_numba(
+                vol,
+                cvol,
+                close,
+                cclose,
+                open_,
+                high,
+                low,
+                lb,
+                max_index,
+                1.0,
+                0,
+            )
+
+            if cand_idx.size == 0:
+                cand_idx = np.array([lb + 1], dtype=np.int64)
+            else:
+                cand_idx = cand_idx[: min(4, cand_idx.size)].astype(np.int64, copy=False)
+
+            simulator._compute_candidate_future_extrema_numba(high, low, cand_idx, 8)
+        except Exception:
+            pass
 
     _worker_simulator = sim
 
@@ -550,6 +605,7 @@ def _build_core_arrays(core_spikes):
                 "ts": np.array([], dtype=np.int64),
                 "dt_str": np.array([], dtype=object),
                 "curr_vol": np.array([], dtype=np.float64),
+                "cand_idx": np.array([], dtype=np.int64),
                 "vol_ratio": np.array([], dtype=np.float64),
                 "price_ratio": np.array([], dtype=np.float64),
                 "hl_pct": np.array([], dtype=np.float64),
@@ -568,6 +624,7 @@ def _build_core_arrays(core_spikes):
         dt_str = np.asarray(core_spikes.get("dt_str", core_spikes.get("datetime", [""] * n)), dtype=object)
 
         curr_vol = np.asarray(core_spikes.get("curr_vol", core_spikes.get("current_volume", np.zeros(n))), dtype=np.float64)
+        cand_idx = np.asarray(core_spikes.get("cand_idx", np.zeros(n)), dtype=np.int64)
         vol_ratio = np.asarray(core_spikes.get("vol_ratio", core_spikes.get("volume_ratio", np.zeros(n))), dtype=np.float64)
         price_ratio = np.asarray(core_spikes.get("price_ratio", np.zeros(n)), dtype=np.float64)
         hl_pct = np.asarray(core_spikes.get("hl_pct", np.zeros(n)), dtype=np.float64)
@@ -597,6 +654,7 @@ def _build_core_arrays(core_spikes):
             "ts": ts,
             "dt_str": dt_str,
             "curr_vol": curr_vol,
+            "cand_idx": cand_idx,
             "vol_ratio": vol_ratio,
             "price_ratio": price_ratio,
             "hl_pct": hl_pct,
@@ -620,6 +678,7 @@ def _build_core_arrays(core_spikes):
             "ts": np.array([], dtype=np.int64),
             "dt_str": np.array([], dtype=object),
             "curr_vol": np.array([], dtype=np.float64),
+            "cand_idx": np.array([], dtype=np.int64),
             "vol_ratio": np.array([], dtype=np.float64),
             "price_ratio": np.array([], dtype=np.float64),
             "hl_pct": np.array([], dtype=np.float64),
@@ -639,6 +698,7 @@ def _build_core_arrays(core_spikes):
     dt_str = np.empty(n, dtype=object)
 
     curr_vol = np.empty(n, dtype=np.float64)
+    cand_idx = np.zeros(n, dtype=np.int64)
     vol_ratio = np.empty(n, dtype=np.float64)
     price_ratio = np.empty(n, dtype=np.float64)
     hl_pct = np.empty(n, dtype=np.float64)
@@ -665,6 +725,7 @@ def _build_core_arrays(core_spikes):
         dt_str[i] = "" if d is None else str(d)
 
         curr_vol[i] = float(s.get("current_volume", 0.0))
+        cand_idx[i] = int(s.get("cand_idx", i))
         vol_ratio[i] = float(s.get("volume_ratio", 0.0))
         price_ratio[i] = float(s.get("price_ratio", 0.0))
         hl_pct[i] = float(s.get("hl_pct", 0.0))
@@ -692,6 +753,7 @@ def _build_core_arrays(core_spikes):
         "ts": ts,
         "dt_str": dt_str,
         "curr_vol": curr_vol,
+        "cand_idx": cand_idx,
         "vol_ratio": vol_ratio,
         "price_ratio": price_ratio,
         "hl_pct": hl_pct,
@@ -744,6 +806,31 @@ def _price_ratio_mask(price_ratio_arr, mode: str, min_v, max_v):
     if max_v is not None:
         keep |= (price_ratio_arr >= float(max_v))
     return keep
+
+
+def apply_cooldown_indices(idx_sorted: np.ndarray, cooldown: int) -> np.ndarray:
+    """
+    idx_sorted deve essere crescente.
+    Selezione greedy: prende il primo, poi il prossimo con idx >= last + cooldown.
+    Ritorna posizioni selezionate dentro idx_sorted.
+    """
+    if idx_sorted.size == 0:
+        return np.array([], dtype=np.int64)
+    try:
+        cd = int(cooldown)
+    except Exception:
+        cd = 0
+    if cd <= 0:
+        return np.arange(idx_sorted.size, dtype=np.int64)
+
+    keep_pos = []
+    j_keep = 0
+    while j_keep < idx_sorted.size:
+        keep_pos.append(j_keep)
+        next_allowed = int(idx_sorted[j_keep]) + cd
+        j_keep = int(np.searchsorted(idx_sorted, next_allowed, side='left'))
+
+    return np.asarray(keep_pos, dtype=np.int64)
 
 
 def _compute_metrics_for_optimizer(arr, idx_arr):
@@ -870,7 +957,7 @@ def _run_simulation_chunk(chunk):
           - scrive spikes file (nome stabile)
           - calcola metriche veloci (identiche a quelle che ti servono nel CSV)
     """
-    global _worker_simulator, _SOFT_PARAM_NAMES, _SOFT_COMBOS, _SOFT_TOTAL, _PROFILE_ENABLED
+    global _worker_simulator, _SOFT_PARAM_NAMES, _SOFT_VALUE_LISTS_BY_NAME, _SOFT_VOLUME_THRESHOLD_VALUES, _SOFT_TOTAL, _PROFILE_ENABLED
     results = []
     stats = {
         "hard_groups": 0,
@@ -893,6 +980,10 @@ def _run_simulation_chunk(chunk):
     sim = _worker_simulator
     spikes_batch = []
     dt_cache = {}
+    soft_param_names_local = list(_SOFT_PARAM_NAMES)
+    soft_value_lists_local = [list(_SOFT_VALUE_LISTS_BY_NAME.get(name, [])) for name in soft_param_names_local]
+    idx_hour_min = soft_param_names_local.index("UTC_HOUR_MIN") if "UTC_HOUR_MIN" in soft_param_names_local else -1
+    idx_hour_max = soft_param_names_local.index("UTC_HOUR_MAX") if "UTC_HOUR_MAX" in soft_param_names_local else -1
 
     def _kfloat(x):
         if x is None:
@@ -915,11 +1006,28 @@ def _run_simulation_chunk(chunk):
                 sim.config[config_key] = value
                 setattr(sim, config_key, value)
 
+        min_soft_volume_threshold = None
+        if _SOFT_VOLUME_THRESHOLD_VALUES:
+            min_soft_volume_threshold = min(_SOFT_VOLUME_THRESHOLD_VALUES)
+        if min_soft_volume_threshold is None:
+            min_soft_volume_threshold = float(getattr(sim, "volume_threshold", sim.config.get("volume_threshold", 0.0)))
+
+        saved_volume_threshold = float(getattr(sim, "volume_threshold", sim.config.get("volume_threshold", 0.0)))
+        saved_spike_cooldown_candles = int(getattr(sim, "spike_cooldown_candles", sim.config.get("spike_cooldown_candles", 0)))
+        sim.volume_threshold = float(min_soft_volume_threshold)
+        sim.config["volume_threshold"] = float(min_soft_volume_threshold)
+        sim.spike_cooldown_candles = 0
+        sim.config["spike_cooldown_candles"] = 0
+
         # Core scan riusabile: disattiva filtri post prima della scansione
         t_core = time.perf_counter()
         saved_filters = _neutralize_post_filters_for_core_scan(sim)
         core_spikes = sim.run_simulation_core_spikes()
         _restore_post_filters_after_core_scan(sim, saved_filters)
+        sim.volume_threshold = saved_volume_threshold
+        sim.config["volume_threshold"] = saved_volume_threshold
+        sim.spike_cooldown_candles = saved_spike_cooldown_candles
+        sim.config["spike_cooldown_candles"] = saved_spike_cooldown_candles
         stats["core_scan_s"] += (time.perf_counter() - t_core)
         if _PROFILE_ENABLED and isinstance(core_spikes, dict):
             cprof = core_spikes.get("__core_profile", {})
@@ -956,13 +1064,31 @@ def _run_simulation_chunk(chunk):
             mask_cache[key] = m
             return m
 
-        for soft_idx, soft_values in enumerate(_SOFT_COMBOS):
+        if soft_value_lists_local:
+            raw_soft_iter = itertools.product(*soft_value_lists_local)
+            if idx_hour_min >= 0 and idx_hour_max >= 0:
+                def _filtered_soft_iter():
+                    for sv in raw_soft_iter:
+                        try:
+                            if int(sv[idx_hour_min]) == int(sv[idx_hour_max]):
+                                continue
+                        except Exception:
+                            continue
+                        yield sv
+                soft_iter = _filtered_soft_iter()
+            else:
+                soft_iter = raw_soft_iter
+        else:
+            soft_iter = [()]
+
+        soft_idx = -1
+        for soft_idx, soft_values in enumerate(soft_iter):
             combination_index = (hard_index * _SOFT_TOTAL) + soft_idx + 1
 
             # full param values = hard + soft
             full_param_values = dict(hard_full_params)
-            if _SOFT_PARAM_NAMES:
-                for name, value in zip(_SOFT_PARAM_NAMES, soft_values):
+            if soft_param_names_local:
+                for name, value in zip(soft_param_names_local, soft_values):
                     full_param_values[name] = value
 
             # SANITY: UTC_HOUR_MIN == UTC_HOUR_MAX -> invalid (policy simulator)
@@ -996,6 +1122,11 @@ def _run_simulation_chunk(chunk):
                 if vtm is not None:
                     k = ("vtm", _kfloat(vtm))
                     mask &= _get_mask(k, lambda: (arr["vol_ratio"] <= float(vtm)))
+
+                vt = full_param_values.get("VOLUME_THRESHOLD")
+                if vt is not None:
+                    k = ("vt", _kfloat(vt))
+                    mask &= _get_mask(k, lambda: (arr["vol_ratio"] >= float(vt)))
 
                 # UTC hour range
                 hmin = full_param_values.get("UTC_HOUR_MIN")
@@ -1054,6 +1185,24 @@ def _run_simulation_chunk(chunk):
                     mask &= _get_mask(k, lambda: (arr["body_ratio"] >= float(br_min)))
 
                 idx_sel = np.flatnonzero(mask)
+
+                cooldown_candles = full_param_values.get("SPIKE_COOLDOWN_CANDLES", 0)
+                try:
+                    cooldown_candles = int(cooldown_candles)
+                except Exception:
+                    cooldown_candles = 0
+                if cooldown_candles > 0 and idx_sel.size > 1:
+                    sel_symbol = arr["symbol"][idx_sel]
+                    sel_cand_idx = arr["cand_idx"][idx_sel]
+                    keep = np.zeros(idx_sel.size, dtype=bool)
+                    uniq = np.unique(sel_symbol)
+                    for sym in uniq:
+                        pos = np.flatnonzero(sel_symbol == sym)
+                        if pos.size == 0:
+                            continue
+                        keep_pos = apply_cooldown_indices(sel_cand_idx[pos], cooldown_candles)
+                        keep[pos[keep_pos]] = True
+                    idx_sel = idx_sel[keep]
 
             # ==== Scrivi file eventi (nome stabile) ====
             spikes_file = f"simulation_results/spikes_excel_opt_{combination_index}.csv"
@@ -1162,29 +1311,37 @@ def main():
     hard_lengths = [len(v) for v in hard_value_lists]
     num_hard_groups = reduce(mul, hard_lengths, 1) if hard_lengths else 1
 
+    soft_value_lists_by_name = {name: vals for name, vals in zip(soft_param_names, soft_value_lists)}
+    soft_volume_threshold_values = list(soft_value_lists_by_name.get("VOLUME_THRESHOLD", []))
+    profile_enabled = os.environ.get("OPTIMIZER_PROFILE", "0").strip() == "1"
+
     # Precompute SOFT combos e rimuovi UTC_HOUR_MIN==UTC_HOUR_MAX (sanity)
     t_combo_build = time.perf_counter()
-    if soft_value_lists:
-        raw_soft_combos = list(itertools.product(*soft_value_lists))
+    if profile_enabled:
+        if soft_value_lists:
+            raw_soft_combos = itertools.product(*soft_value_lists)
+            if "UTC_HOUR_MIN" in soft_param_names and "UTC_HOUR_MAX" in soft_param_names:
+                idx_min = soft_param_names.index("UTC_HOUR_MIN")
+                idx_max = soft_param_names.index("UTC_HOUR_MAX")
+
+                def _stream_filtered_combos_for_count():
+                    for combo in raw_soft_combos:
+                        try:
+                            if int(combo[idx_min]) == int(combo[idx_max]):
+                                continue
+                        except Exception:
+                            continue
+                        yield combo
+
+                soft_total = sum(1 for _ in _stream_filtered_combos_for_count())
+            else:
+                soft_total = sum(1 for _ in raw_soft_combos)
+        else:
+            soft_total = 1
+        total_combinations = num_hard_groups * soft_total
     else:
-        raw_soft_combos = [()]
-
-    soft_combos = raw_soft_combos
-    if "UTC_HOUR_MIN" in soft_param_names and "UTC_HOUR_MAX" in soft_param_names:
-        idx_min = soft_param_names.index("UTC_HOUR_MIN")
-        idx_max = soft_param_names.index("UTC_HOUR_MAX")
-        filtered = []
-        for combo in soft_combos:
-            try:
-                if int(combo[idx_min]) == int(combo[idx_max]):
-                    continue
-            except Exception:
-                continue
-            filtered.append(combo)
-        soft_combos = filtered
-
-    soft_total = len(soft_combos) if soft_combos else 1
-    total_combinations = num_hard_groups * soft_total
+        soft_total = 1
+        total_combinations = None
     combo_build_s = (time.perf_counter() - t_combo_build)
 
     # performance
@@ -1200,7 +1357,6 @@ def main():
     chunk_env = os.environ.get("OPTIMIZER_CHUNK_SIZE", "auto").strip()
     chunk_size = _auto_chunk_size(num_hard_groups, num_workers, chunk_env)
 
-    profile_enabled = os.environ.get("OPTIMIZER_PROFILE", "0").strip() == "1"
     spikes_batch_size = os.environ.get("OPTIMIZER_SPIKES_BATCH_SIZE", "1000").strip()
 
     print("========================================")
@@ -1229,8 +1385,12 @@ def main():
 
     print("----------------------------------------")
     print(f"Gruppi HARD: {num_hard_groups}")
-    print(f"Combinazioni SOFT (valide): {soft_total}")
-    print(f"Totale combinazioni (valide): {total_combinations}")
+    if profile_enabled:
+        print(f"Combinazioni SOFT (valide): {soft_total}")
+        print(f"Totale combinazioni (valide): {total_combinations}")
+    else:
+        print("Combinazioni SOFT (valide): unknown/streaming")
+        print("Totale combinazioni (valide): unknown/streaming")
     print(f"Output CSV: {output_csv}")
     print(f"OPTIMIZER_WORKERS: {num_workers}")
     print(f"OPTIMIZER_CHUNK_SIZE: {chunk_size} (source={chunk_env if chunk_env else 'auto'})")
@@ -1266,7 +1426,7 @@ def main():
         with Pool(
             processes=num_workers,
             initializer=_init_worker,
-            initargs=(base_config, soft_param_names, soft_combos, soft_total, profile_enabled),
+            initargs=(base_config, soft_param_names, soft_value_lists_by_name, soft_total, profile_enabled, soft_volume_threshold_values),
         ) as pool:
             hard_iter = iter(hard_groups_iter())
             dynamic_chunk_size = chunk_size
