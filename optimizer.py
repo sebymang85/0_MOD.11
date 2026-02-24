@@ -441,6 +441,12 @@ def _init_worker(base_config: dict, soft_param_names: list, soft_combos: list, s
         elif optimizer_core_use_numba_env == "1":
             cfg["core_use_numba"] = True
 
+    optimizer_core_extrema_mode_env = os.environ.get("OPTIMIZER_CORE_EXTREMA_MODE")
+    if optimizer_core_extrema_mode_env is not None:
+        optimizer_core_extrema_mode_env = optimizer_core_extrema_mode_env.strip().lower()
+        if optimizer_core_extrema_mode_env in ("candidate", "precompute"):
+            cfg["core_extrema_mode"] = optimizer_core_extrema_mode_env
+
     sim = simulator.TradingSimulator(cfg)
 
     symbols = sim.get_available_symbols()
